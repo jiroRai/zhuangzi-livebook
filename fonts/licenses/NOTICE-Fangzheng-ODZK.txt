@@ -1,0 +1,27 @@
+字体（用户自备，均仅限个人使用）
+================================
+
+本 EPUB 的楷体层由两个方正字体拼接而成，并以 OFL 字体兜底：
+
+1) 主字体：方正手迹·欧蝶正楷（简）
+   文件：font/方正手迹-欧蝶正楷(简).ttf
+   版权：Copyright (c) Founder Handwriting Digital Technology Co., Ltd.（方正手迹）
+   字形：7,712 个（Version 1.00）
+
+2) 补字：方正字迹·张颢簪花小楷（简繁）
+   文件：font/方正字迹-张颢簪花小楷(简繁).ttf
+   版权：Copyright (c) Beijing Founder Electronics Co., Ltd.（方正字迹）
+   字形：9,967 个（Version 1.01）
+   用途：欧蝶正楷缺少的本书用字中，张颢簪花小楷可补的 10 个字优先由它补入。
+
+3) 兜底：霞鹜文楷 LXGW WenKai（SIL OFL-1.1）
+   文件：work/fonts/src/LXGWWenKai-Regular.ttf
+   用途：两个方正字体都缺的 333 个本书用字，由霞鹜文楷补入同一子集文件。
+
+合并方式：构建时按上述顺序逐一把缺字字形物理并入 fonts/GJ-Kai-Regular.ttf
+（复合字形展开、坐标取整、去掉 vmtx 竖排指标），保证 KOReader 单字体渲染无豆腐块。
+因此该文件内以欧蝶正楷字形为主，少量生僻字为张颢簪花小楷或霞鹜文楷字形。
+
+使用范围：上述方正字体仅限本书个人阅读使用；不得再分发、商用或用于其他作品。
+如要对外分发本增强版，请删除 book.yaml 的 fonts.sources / fallbacks 后重新构建，
+构建器会自动回退为纯 OFL 字体（霞鹜文楷 + 思源宋体/黑体）。

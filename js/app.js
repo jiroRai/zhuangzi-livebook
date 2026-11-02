@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { createStage } from './stage.js';
 import { Book, makeTextures, W, H, T, TB, OV } from './book.js';
-import { buildPages, drawBase, drawLive, tocHit, storyHit, PW, PH, PAGE_FONTS_TEXT } from './pages.js';
+import { buildPages, drawBase, drawLive, tocHit, storyHit, markHit, cnNum, PW, PH, PAGE_FONTS_TEXT } from './pages.js';
 import { Popup } from './popup.js';
 import { SCENES } from './scenes/index.js';
 import { FONTS } from './ink.js';
@@ -21,20 +21,32 @@ const $ = (s) => document.querySelector(s);
 const fontReady = new Set();
 async function ensureFonts(text) {
   if (!document.fonts || !text) return false;
-  const specs = [`40px "Noto Serif SC"`, `600 40px "Noto Serif SC"`, `40px "Ma Shan Zheng"`];
+  const specs = [
+    `40px "GJ-Kai"`, `700 40px "GJ-Kai"`,
+    `40px "GJ-KaiFallback"`, `40px "GJ-KaiExtB"`, `40px "GJ-KaiPua"`,
+    `40px "GJ-Song"`, `700 40px "GJ-Song"`,
+    `40px "GJ-Title"`, `600 40px "GJ-Title"`,
+    `40px "Ma Shan Zheng"`, `40px "Noto Serif SC"`,
+  ];
   const need = specs.filter(s => !document.fonts.check(s, text));
   if (!need.length) return false;
   try {
-    await Promise.race([Promise.all(need.map(s => document.fonts.load(s, text))), new Promise(r => setTimeout(r, 2500))]);
+    await Promise.race([Promise.all(need.map(s => document.fonts.load(s, text))), new Promise(r => setTimeout(r, 3500))]);
   } catch (e) { /* 忽略 */ }
   return true;
 }
 
 async function boot() {
   const mobile = isTouch() || Math.min(innerWidth, innerHeight) < 600;
-  const res = await fetch('content/zhuangzi.json');
-  const data = await res.json();
-  await ensureFonts('庄子内外杂篇三十三互动读本南华真经逍遥战国周及其后学简体全文关于这本书导读目录' + data.map(c => c.title).join(''));
+  const [mainRes, originRes, marksRes] = await Promise.all([
+    fetch('content/zhuangzi.json'),
+    fetch('content/original.json').catch(() => null),
+    fetch('content/marks.json').catch(() => null),
+  ]);
+  const data = await mainRes.json();
+  const original = originRes && originRes.ok ? await originRes.json() : null;
+  const marks = marksRes && marksRes.ok ? await marksRes.json() : null;
+  await ensureFonts('庄子内外杂篇三十三互动读本原文白话南华真经逍遥战国周及其后学简体全文关于这本书导读目录记号说明概念人物地名古今异义关键词' + data.map(c => c.title).join(''));
 
   const stage = createStage($('#gl'), { mobile });
   const { renderer, scene, camera } = stage;
@@ -44,27 +56,65 @@ async function boot() {
   book.group.position.set(0, 0, 0);
   scene.add(book.group);
 
-  const { pages, chapterPage, tocPage } = buildPages(data);
+  const { pages, chapterPage, tocPage } = buildPages(data, original, marks);
   for (const p of pages) if (p.scene && SCENES[p.scene]) p.ground = SCENES[p.scene].ground;
   const N = pages.length / 2;           // 纸张数
   const hR = (m) => m <= 0 ? T : Math.max(0, T * (N - (m - 1)) / N);
   const hL = (m) => m <= 1 ? 0 : T * (m - 1) / N;
 
+  // —— 左侧目录边栏 ——
+  const sidebar = $('#sidebar'), sideList = $('#side-list'), menuBtn = $('#menu');
+  const sideButtons = [];
+  function setSidebar(open) {
+    sidebar.classList.toggle('open', open);
+    sidebar.setAttribute('aria-hidden', open ? 'false' : 'true');
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) sfx.tap(540, 0.12, 0.06);
+  }
+  menuBtn.addEventListener('click', () => setSidebar(!sidebar.classList.contains('open')));
+  $('#side-close').addEventListener('click', () => setSidebar(false));
+  document.addEventListener('pointerdown', (e) => {
+    if (!sidebar.classList.contains('open')) return;
+    if (!sidebar.contains(e.target) && !menuBtn.contains(e.target)) setSidebar(false);
+  });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') setSidebar(false); });
+  let sidePart = '';
+  for (const ch of data) {
+    if (ch.part !== sidePart) {
+      sidePart = ch.part;
+      const h = document.createElement('p'); h.className = 'side-part'; h.textContent = ch.part; sideList.appendChild(h);
+    }
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.no = ch.no;
+    const n = document.createElement('small'); n.textContent = cnNum(+ch.no); b.appendChild(n);
+    b.appendChild(document.createTextNode(ch.title));
+    b.addEventListener('click', () => {
+      const page = chapterPage[+ch.no];
+      if (page == null) return;
+      const t = spreadOf(page + 1);
+      jumpTo(t.m, t.side);
+      setSidebar(false);
+    });
+    sideList.appendChild(b); sideButtons.push(b);
+  }
+
   // —— 书页纹理缓存 ——
   const cache = new Map();   // index -> {canvas, base, tex, live, used}
   const live = new Map();    // index -> 动态状态（批注、已发现的条目……）
   let clock = 0;
+  let warmTimer = 0;         // 空闲时预热相邻对开页纹理
   function liveOf(i) { if (!live.has(i)) live.set(i, { t: 0, t0: 0, found: new Set(), note: null, hover: null, active: false }); return live.get(i); }
   function entry(i) {
     let e = cache.get(i);
     if (!e) {
       const page = pages[i];
-      const base = document.createElement('canvas'); base.width = PW; base.height = PH;
-      const canvas = document.createElement('canvas'); canvas.width = PW; canvas.height = PH;
+      const pix = 1;
+      const base = document.createElement('canvas'); base.width = PW * pix; base.height = PH * pix;
+      const canvas = document.createElement('canvas'); canvas.width = PW * pix; canvas.height = PH * pix;
       const t = new THREE.CanvasTexture(canvas);
       t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = aniso;
       t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter;
-      e = { canvas, base, tex: t, used: clock };
+      e = { canvas, base, tex: t, used: clock, pix };
       cache.set(i, e);
       paintBase(i, e);
       const txt = PAGE_FONTS_TEXT(page);
@@ -76,12 +126,15 @@ async function boot() {
   }
   function paintBase(i, e) {
     const g = e.base.getContext('2d');
+    g.setTransform(e.pix, 0, 0, e.pix, 0, 0);
     drawBase(g, pages[i], { pages });
     composite(i, e);
   }
   function composite(i, e) {
     const g = e.canvas.getContext('2d');
-    g.drawImage(e.base, 0, 0);
+    g.setTransform(e.pix, 0, 0, e.pix, 0, 0);
+    g.clearRect(0, 0, PW, PH);
+    g.drawImage(e.base, 0, 0, PW, PH);
     const L = live.get(i);
     let busy = false;
     if (L && L.active) busy = drawLive(g, pages[i], L, { pages });
@@ -183,6 +236,7 @@ async function boot() {
 
   // 一次走一步（前/后）
   function go(dir) {
+    hideMarkCard();
     if (flip || coverAnim || riffle) { if (queue.length < 2) queue.push(dir); else if (flip && flip.released) flip.speed = 2.2; return; }
     if (single()) {
       // 单页模式：先在左右页之间移动镜头
@@ -199,14 +253,16 @@ async function boot() {
 
   // 单页模式下镜头移到右页：插图从头再立起来一次
   function focusRight() {
+    hideMarkCard();
     focus = 'R'; reframe(); onSpreadUI(); updateHash();
     if (popup && popup.T > 0.5) { popup.T = -0.25; for (const it of popup.items) it.popped = false; popup.popped = 0; }
     if (popup && popup.auto) popup.auto.at = AUTO_FIRST;
   }
-  function focusLeft() { focus = 'L'; reframe(); onSpreadUI(); updateHash(); }
+  function focusLeft() { hideMarkCard(); focus = 'L'; reframe(); onSpreadUI(); updateHash(); }
 
   // 快速翻到第 m 张；side 指定落在哪一面（单页模式、地址栏用）
   function jumpTo(m, side) {
+    hideMarkCard();
     m = clamp(Math.round(m), 0, N + 1);
     if (flip || coverAnim || riffle) return;
     dismissHint();
@@ -324,9 +380,10 @@ async function boot() {
     for (const i of visibleIndices()) {
       const L = liveOf(i);
       const page = pages[i];
-      if (page.type === 'text' || page.type === 'toc' || page.type === 'scenepage') {
+      if (page.type === 'text' || page.type === 'origin' || page.type === 'toc' || page.type === 'scenepage') {
         L.active = true; L.t = 0; L.busy = true;
-        if (page.type === 'text' && !page.lines.some(l => l.marks && l.marks.length)) L.busy = false;
+        if (page.type === 'text' && !page.lines.some(l => (l.sem && l.sem.length) || (l.marks && l.marks.length))) L.busy = false;
+        if (page.type === 'origin' && !page.rows.some(r => r.sem && r.sem.length)) L.busy = false;
       }
     }
     openPopup();
@@ -336,6 +393,31 @@ async function boot() {
     reframe();
     onSpreadUI();
     updateHash();
+    prewarmNext();
+  }
+
+  // 空闲时预生成前后对开页纹理：翻页时不再临时 paint/上传，避免掉帧与声音卡顿
+  function prewarmNext() {
+    clearTimeout(warmTimer);
+    warmTimer = setTimeout(() => {
+      if (flip || riffle || coverAnim || drag) return;
+      const want = [];
+      for (const m of [pos + 1, pos - 1]) {
+        if (m < 1) continue;
+        for (const i of [leftIdx(m), rightIdx(m)]) {
+          if (i >= 0 && i < pages.length && !cache.has(i) && !want.includes(i)) want.push(i);
+        }
+      }
+      const step = () => {
+        if (flip || riffle || coverAnim || drag) return;
+        const i = want.shift();
+        if (i == null) return;
+        entry(i);
+        if (window.requestIdleCallback) window.requestIdleCallback(step, { timeout: 260 });
+        else setTimeout(step, 60);
+      };
+      step();
+    }, 180);
   }
 
   // 当前所指的那一页（0 起）：单页时是正在看的那面；双页时是 focus 一侧（翻页后为左页）
@@ -370,26 +452,54 @@ async function boot() {
 
   // —— 界面 ——
   const label = $('#label'), sub = $('#sub');
+  const markcard = $('#markcard'), mkCat = $('#mk-cat'), mkTitle = $('#mk-title'), mkBody = $('#mk-body'), mkExtra = $('#mk-extra');
+  const MK_CAT = { concept: '概念 · 术语词典', person: '人物 · 人物志', place: '地名', classical: '古今异义', keyword: '关键词' };
+  function hideMarkCard() { markcard.hidden = true; markcard.classList.remove('on'); }
+  function showMarkCard(m, x, y) {
+    if (!m || !m.info) { hideMarkCard(); return; }
+    mkCat.textContent = MK_CAT[m.cat] || '记号';
+    mkTitle.textContent = m.t;
+    mkBody.textContent = m.info;
+    mkExtra.textContent = m.portrait || '';
+    markcard.hidden = false;
+    requestAnimationFrame(() => {
+      markcard.classList.add('on');
+      const pad = 14;
+      const w = markcard.offsetWidth, h = markcard.offsetHeight;
+      let left = x + 18, top = y + 18;
+      if (left + w > innerWidth - pad) left = x - w - 18;
+      if (top + h > innerHeight - pad) top = y - h - 18;
+      markcard.style.left = clamp(left, pad, innerWidth - w - pad) + 'px';
+      markcard.style.top = clamp(top, pad, innerHeight - h - pad) + 'px';
+    });
+  }
+  $('#mk-close').addEventListener('click', hideMarkCard);
+  document.addEventListener('pointerdown', (e) => { if (!markcard.contains(e.target)) hideMarkCard(); }, true);
   function chapterAt(i) {
     for (let k = i; k >= 0; k--) if (pages[k].ch) return pages[k].ch;
     return null;
   }
   function onSpreadUI() {
-    let t = '封面', s = '';
+    let t = '封面', s = '', activeNo = 0;
     if (pos >= 1) {
       const i = single() ? curIdx() : (rightIdx(pos) >= 0 ? rightIdx(pos) : leftIdx(pos));
       const page = pages[i] || pages[leftIdx(pos)];
       const ch = page && page.type !== 'after' && page.type !== 'colophon' && page.scene !== 'end' ? chapterAt(page.index) : null;
-      if (ch) { t = ch.title; s = ch.part; }
+      if (ch) activeNo = +ch.no;
+      if (page && page.type === 'origin') { t = ch ? ch.title : '原文'; s = '原文'; }
+      else if (ch) { t = ch.title; s = ch.part; }
       else if (page && page.type === 'toc') t = '目录';
       else if (page && (page.type === 'intro1' || page.type === 'intro2' || page.scene === 'parts')) t = '导读';
+      else if (page && page.type === 'legend') { t = '记号说明'; s = '导读'; }
       else if (page && page.index < 3) t = '扉页';
       else t = '读后';
       const li = leftIdx(pos), ri = rightIdx(pos);
+      if ((li >= 0 && pages[li] && pages[li].type === 'legend') || (ri >= 0 && pages[ri] && pages[ri].type === 'legend')) { t = '记号说明'; s = '导读'; }
       const nums = !single() && li >= 0 && ri >= 0 ? `${li + 1}–${ri + 1}` : `${curIdx() + 1}`;
       s = (s ? s + ' · ' : '') + `第 ${nums} 页 / ${pages.length}`;
     }
     label.textContent = t; sub.textContent = s;
+    for (const b of sideButtons) b.classList.toggle('on', +b.dataset.no === activeNo);
     $('#prev').disabled = pos === 0;
     $('#next').disabled = pos >= N + 1;
   }
@@ -413,7 +523,6 @@ async function boot() {
   }
   $('#prev').addEventListener('click', () => { sfx.unlock(); go(-1); });
   $('#next').addEventListener('click', () => { sfx.unlock(); go(1); });
-  $('#toc').addEventListener('click', () => { sfx.unlock(); jumpTo(Math.floor(tocPage / 2) + 2, 'L'); });
   const muteBtn = $('#mute');
   const setMuteUI = () => { muteBtn.classList.toggle('off', sfx.isMuted()); muteBtn.setAttribute('aria-label', sfx.isMuted() ? '打开声音' : '静音'); };
   muteBtn.addEventListener('click', () => { sfx.unlock(); sfx.setMuted(!sfx.isMuted()); setMuteUI(); });
@@ -571,6 +680,10 @@ async function boot() {
     if (pos === 0) { go(1); return; }
     const ph = pageHit();
     const page = ph && pages[ph.index];
+    if (page) {
+      const mh = markHit(page, ph.uv.x, ph.uv.y);
+      if (mh && mh.info) { sfx.tap(620, 0.24, 0.1); showMarkCard(mh, e.clientX, e.clientY); return; }
+    }
     if (page && page.type === 'toc') {
       const no = tocHit(page, ph.uv.x, ph.uv.y);
       if (no) { sfx.tap(660, 0.2, 0.12); jumpTo(Math.floor(chapterPage[no] / 2) + 2, 'L'); return; }
@@ -599,6 +712,7 @@ async function boot() {
         const page = pages[ph.index];
         if (page.type === 'toc') { th = tocHit(page, ph.uv.x, ph.uv.y); if (th) { link = true; th = { i: ph.index, no: th }; } }
         if (page.type === 'opener' && storyHit(page, ph.uv.x, ph.uv.y) != null) link = true;
+        if (markHit(page, ph.uv.x, ph.uv.y)?.info) link = true;
       }
     }
     if ((th && th.no) !== (tocHover && tocHover.no)) {
@@ -689,9 +803,9 @@ async function boot() {
       if (p.F <= 0) { p.dispose(); dying.splice(i, 1); }
     }
 
-    // 页面动态层（批注写字等）：重画整页并上传纹理，约 30 次/秒就够了
+    // 页面动态层（批注写字等）：重画整页并上传纹理，30 次/秒就够了
     liveDt += dt;
-    const liveTick = liveDt >= 1 / 32;
+    const liveTick = liveDt >= 1 / 30;
     for (const i of visibleIndices()) {
       const L = live.get(i);
       if (!L || !L.active) continue;

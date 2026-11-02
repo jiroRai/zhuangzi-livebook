@@ -1,0 +1,12 @@
+/* Web fonts subset from the EPUB build (OFL fonts + user-supplied Fangzheng / Cooper).
+   Fangzheng Kai fonts are for personal, non-commercial use only.
+   Do not publish this file together with the Fangzheng WOFF2s. */
+@font-face { font-family: "GJ-Kai";  src: url("kai-regular.woff2") format("woff2");  font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-Kai";  src: url("kai-bold.woff2")    format("woff2");  font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-KaiFallback"; src: url("kai-fallback.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-KaiExtB"; src: url("kai-extb.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-KaiPua"; src: url("kai-pua.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-Song"; src: url("song-regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-Song"; src: url("song-bold.woff2")    format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-Title";src: url("title-regular.woff2")format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GJ-Title";src: url("title-bold.woff2")   format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }

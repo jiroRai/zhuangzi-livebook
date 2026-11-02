@@ -8,7 +8,7 @@ function ensure() {
   if (!AC) return null;
   ctx = new AC();
   master = ctx.createGain();
-  master.gain.value = muted ? 0 : 0.55;
+  master.gain.value = muted ? 0 : 0.48;
   master.connect(ctx.destination);
   const len = ctx.sampleRate * 1.2;
   noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -24,7 +24,7 @@ export const isMuted = () => muted;
 export function setMuted(m) {
   muted = m;
   localStorage.setItem('zhuangzi-book:mute', m ? '1' : '0');
-  if (master) master.gain.setTargetAtTime(m ? 0 : 0.55, ctx.currentTime, 0.05);
+  if (master) master.gain.setTargetAtTime(m ? 0 : 0.48, ctx.currentTime, 0.05);
 }
 
 function noise(t0, dur, { f0 = 1800, f1 = 900, q = 0.8, peak = 0.5, attack = 0.02, type = 'bandpass', rate = 1 } = {}) {
@@ -43,14 +43,17 @@ function noise(t0, dur, { f0 = 1800, f1 = 900, q = 0.8, peak = 0.5, attack = 0.0
   src.start(t0, Math.random() * 0.5, dur + 0.05);
 }
 
-// 翻页：先是纸张掀起的沙沙，再是落下的轻拍
+// 翻页：柔和一点的纸张摩擦，再是一记很轻的落页
 export function flip(speed = 1) {
   if (!ctx || muted) return;
   const t = ctx.currentTime;
-  const d = 0.42 / speed;
-  noise(t, d, { f0: 2600, f1: 1200, q: 0.6, peak: 0.22, attack: d * 0.4 });
-  noise(t + d * 0.15, d * 0.8, { f0: 5200, f1: 3000, q: 1.2, peak: 0.06, attack: d * 0.3 });
-  noise(t + d * 0.92, 0.12, { f0: 700, f1: 300, q: 0.7, peak: 0.25, attack: 0.006, type: 'lowpass' });
+  const d = 0.46 / speed;
+  // 主摩擦声：降低中心频率、减弱高频，听感更接近厚纸而不是塑料
+  noise(t, d, { f0: 1500, f1: 720, q: 0.45, peak: 0.11, attack: d * 0.5 });
+  // 极轻的纸面细节，去掉刺耳的高频
+  noise(t + d * 0.22, d * 0.7, { f0: 2300, f1: 1500, q: 0.8, peak: 0.025, attack: d * 0.35 });
+  // 落页：低频、短促、音量小
+  noise(t + d * 0.95, 0.16, { f0: 420, f1: 170, q: 0.6, peak: 0.12, attack: 0.008, type: 'lowpass' });
 }
 
 // 封面：更沉的一声

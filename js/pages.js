@@ -9,6 +9,8 @@ const LH = 76;                          // 行距
 const COLS = 19, ROWS = 15;
 const TOP = 168;
 const INNER = 124, OUTER = 98;          // 订口、翻口留白
+// 原文页：楷体，字号略小、行距略紧，一页 20 字 × 15 行
+const O_FS = 46, O_LH = 82, O_COLS = 17, O_ROWS = 14, O_TOP = 200;
 const OPEN = '「『（《〈“‘([';
 const CLOSE = '，。、；：？！」』）》〉”’…)]';
 const NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十', '二十一', '二十二', '二十三', '二十四', '二十五', '二十六', '二十七', '二十八', '二十九', '三十', '三十一', '三十二', '三十三'];
@@ -69,10 +71,80 @@ function layoutPara(chars, cols, indent) {
   return lines;
 }
 
+// —— 记号：EPUB 的概念/人物/地名/古今异义/关键词，按页分配 ——
+const SEM_STYLE = {
+  concept:   { bg: '188,212,238', line: '#6f8fae', dash: [], w: 2 },
+  person:    { bg: '236,205,174', line: '#b07a4e', dash: [2, 5], w: 2 },
+  place:     { bg: '174,205,166', line: '#6f9161', dash: [7, 6], w: 2 },
+  classical: { bg: '202,173,226', line: '#8a6aa8', dash: [], w: 3 },
+  keyword:   { bg: null, line: null, dash: [], w: 0 },
+};
+
+function compileMarks(marksData) {
+  return ((marksData && marksData.terms) || [])
+    .filter(t => t && t.t)
+    .map(t => ({ ...t, len: Array.from(t.t).length }))
+    .sort((a, b) => b.len - a.len || (a.prio || 9) - (b.prio || 9));
+}
+
+// 在行数组上标出本页的记号；used 是这一篇已用过的词（每篇一次）
+function annotate(lines, terms, used, geom, cap = { bg: 3, kw: 3 }, opts = {}) {
+  const rects = [];
+  let bg = 0, kw = 0;
+  lines.forEach((ln, r) => {
+    if (!ln.chars) return;
+    const text = ln.chars.join('');
+    const occupied = [];
+    for (const t of terms) {
+      if (used.has(t.t)) continue;
+      if (opts.skipClassical && t.cat === 'classical') continue;
+      const idx = text.indexOf(t.t);
+      if (idx < 0) continue;
+      const len = t.len;
+      const isKw = t.cat === 'keyword' || len === 1;
+      if (isKw ? kw >= cap.kw : bg >= cap.bg) continue;
+      if (occupied.some(([a, b]) => idx < a + len && idx + len > a)) continue;
+      used.add(t.t);
+      occupied.push([idx, idx + len]);
+      if (isKw) kw++; else bg++;
+      ln.sem = ln.sem || [];
+      ln.sem.push({ col: idx, len, t: t.t, cat: t.cat, info: t.info || '', portrait: t.portrait || '', small: len === 1 });
+      const x = geom.x0 + (ln.indent + idx) * geom.fs - 2;
+      const y = geom.y(r);
+      rects.push({ x, y: y - geom.fs * 0.92, w: len * geom.fs + 4, h: geom.fs * 1.22,
+        mark: { t: t.t, cat: t.cat, info: t.info || '', portrait: t.portrait || '' } });
+      if (bg >= cap.bg && kw >= cap.kw) break;
+    }
+  });
+  return rects;
+}
+
+function buildOrigin(data, ch, push, terms, used) {
+  if (!data) return;
+  const rows = [];
+  data.sections.forEach((sec, si) => {
+    rows.push({ head: true, title: sec.title, sec: si });
+    for (const p of sec.texts) {
+      const lines = layoutPara(Array.from(p), O_COLS, 2);
+      lines.forEach(ln => rows.push({ chars: ln.chars, indent: ln.indent }));
+    }
+  });
+  const geom = { fs: O_FS, y: (r) => O_TOP + 44 + r * O_LH };
+  for (let i = 0; i < rows.length; i += O_ROWS) {
+    const chunk = rows.slice(i, i + O_ROWS);
+    const page = push({ type: 'origin', ch, no: +ch.no, rows: chunk, last: i + O_ROWS >= rows.length, first: i === 0 });
+    const x0 = page.side === 'R' ? INNER : OUTER;
+    page.markRects = annotate(chunk, terms, used, { ...geom, x0 });
+  }
+}
+
 // —— 构建整本书的页面序列 ——
-export function buildPages(data) {
+export function buildPages(data, original, marksData) {
   const pages = [];
   const chapterPage = {};
+  const terms = compileMarks(marksData);
+  const originMap = {};
+  for (const ch of (original || [])) originMap[+ch.no] = ch;
   const push = (p) => { p.index = pages.length; p.side = pages.length % 2 === 0 ? 'R' : 'L'; pages.push(p); return p; };
   const toLeft = (ch) => { if (pages.length % 2 === 0) push({ type: 'coda', ch }); };
 
@@ -81,6 +153,7 @@ export function buildPages(data) {
   push({ type: 'scenepage', scene: 'parts', meta: FRONT_SCENES.parts, head: '导读' });
   push({ type: 'intro1' });
   push({ type: 'intro2' });
+  push({ type: 'legend' });
   const toc = [push({ type: 'toc', part: 0 }), push({ type: 'toc', part: 1 })];
 
   let lastPart = '';
@@ -93,10 +166,13 @@ export function buildPages(data) {
     const opener = push({ type: 'opener', ch, no, meta, count, firstOfPart: ch.part !== lastPart, stories: [] });
     lastPart = ch.part;
     push({ type: 'scenepage', ch, no, scene: 'ch' + no, meta, head: ch.title });
-    // 正文分行
+    // 原文页（在插图后、白话前）
+    buildOrigin(originMap[no], ch, push, terms, new Set());
+    // 白话分行
     const all = [];
     const triggers = MARGIN.filter(m => m[0] === no);
     const used = new Set();
+    const usedSem = new Set();
     ch.paragraphs.forEach((para, pi) => {
       const chars = Array.from(para);
       const lines = layoutPara(chars, COLS, 2);
@@ -118,7 +194,9 @@ export function buildPages(data) {
       });
     });
     for (let i = 0; i < all.length; i += ROWS) {
-      const tp = push({ type: 'text', ch, no, lines: all.slice(i, i + ROWS), last: i + ROWS >= all.length });
+      const tp = push({ type: 'text', ch, no, lines: all.slice(i, i + ROWS), last: i + ROWS >= all.length, first: i === 0 });
+      const x0 = tp.side === 'R' ? INNER : OUTER;
+      tp.markRects = annotate(tp.lines, terms, usedSem, { fs: FS, x0, y: (r) => TOP + 44 + r * LH }, { bg: 3, kw: 3 }, { skipClassical: true });
       for (const ln of tp.lines) for (const m of ln.marks) opener.stories.push({ label: m.label, page: tp.index });
     }
   }
@@ -187,6 +265,8 @@ function runningHead(g, page, label) {
 export const PAGE_FONTS_TEXT = (p) => {
   // 返回该页会用到的文字，用于按需加载网络字体
   if (p.type === 'text') return p.lines.map(l => l.chars.join('')).join('') + p.ch.title;
+  if (p.type === 'origin') return p.rows.map(r => r.head ? r.title : r.chars.join('')).join('') + p.ch.title + '原文第节';
+  if (p.type === 'legend') return '记号说明读法概念人物地名古今异义关键词蓝灰底实线暖赭点灰绿虚紫粗只加粗不铺底逍遥庖丁北冥颜色鲲鹏原文楷体白话宋体标题正页边朱笔旁批保留';
   if (p.type === 'opener') return p.ch.title + (p.ch.sub || '') + p.meta.intro + p.meta.line + p.ch.part + '内外杂篇第一二三四五六七八九十本约字读完分钟一句话导读故事全篇慢';
   return '';
 };
@@ -226,7 +306,7 @@ const DRAW = {
     setFont(g, 150, FONTS.brush);
     g.fillText('庄 子', PW / 2, PH - 360);
     setFont(g, 30); g.fillStyle = 'rgba(40,34,30,.75)';
-    g.fillText('三十三篇 · 白话讲述 · 互动读本', PW / 2, PH - 270);
+    g.fillText('三十三篇 · 原文与白话 · 互动读本', PW / 2, PH - 270);
     setFont(g, 24); g.fillStyle = 'rgba(40,34,30,.5)';
     g.fillText('战国 · 庄周及其后学', PW / 2, PH - 220);
     const ink = new Ink(g, PW, PW / 2, PH * 0.5);
@@ -299,7 +379,7 @@ const DRAW = {
     g.textAlign = 'left';
     g.fillStyle = VERM; setFont(g, 28);
     g.fillText(`${ch.part} · 第${cnNum(no)}`, x, 222);
-    g.fillStyle = INK; setFont(g, 96, FONTS.serif, '600');
+    g.fillStyle = INK; setFont(g, 96, FONTS.title, '600');
     const title = [...ch.title].join(' ');
     g.fillText(title, x - 4, 340);
     g.strokeStyle = 'rgba(40,34,30,.5)'; g.lineWidth = 1.5;
@@ -382,6 +462,96 @@ const DRAW = {
     }
   },
 
+  origin(g, page) {
+    runningHead(g, page, page.ch.title + ' · 原文');
+    const x = textX(page.side);
+    page.rows.forEach((row, r) => {
+      const y = O_TOP + 44 + r * O_LH;
+      if (row.head) {
+        g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+        g.fillStyle = VERM; setFont(g, 22);
+        const label = `第${cnNum(row.sec + 1)}节`;
+        g.fillText(label, x, y + 2);
+        const lw = g.measureText(label).width;
+        g.fillStyle = INK; setFont(g, 32, FONTS.title, '600');
+        g.fillText(row.title, x + lw + 16, y + 2);
+        g.strokeStyle = 'rgba(176,67,45,.35)'; g.lineWidth = 1.2;
+        g.beginPath(); g.moveTo(x, y + 18); g.lineTo(x + gridW, y + 18); g.stroke();
+      } else {
+        g.fillStyle = '#1c1712'; setFont(g, O_FS, FONTS.kai);
+        g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+        g.strokeStyle = 'rgba(28,23,18,.7)'; g.lineWidth = 1.5;
+        row.chars.forEach((c, k) => {
+          const cx = x + (row.indent + k) * O_FS + O_FS / 2;
+          g.fillText(c, cx, y);
+          g.strokeText(c, cx, y);
+        });
+        g.textAlign = 'left';
+      }
+    });
+    if (page.last) {
+      g.save();
+      g.fillStyle = 'rgba(176,67,45,.8)'; setFont(g, 24); g.textAlign = 'right';
+      g.fillText('白话译文见后 →', textX(page.side) + gridW, PH - 120);
+      g.restore();
+    }
+    if (page.first) {
+      g.save();
+      g.fillStyle = 'rgba(60,50,40,.45)'; setFont(g, 22); g.textAlign = 'left';
+      g.fillText('原文 · 楷体', x, 158);
+      g.restore();
+    }
+  },
+
+  legend(g, page) {
+    runningHead(g, page, '记号');
+    const x = textX('L');
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    g.fillStyle = VERM; setFont(g, 24); g.fillText('读法', x, 216);
+    g.fillStyle = INK; setFont(g, 52, FONTS.title, '600'); g.fillText('记号说明', x, 286);
+    g.fillStyle = 'rgba(40,34,30,.72)'; setFont(g, 31);
+    let y = 356;
+    const lead = '书页上的彩色底、下划线、粗体，都对应 EPUB 版的精读记号。翻到这几页时，它们会像批注一样逐笔写出来；点一下还可以看词条。';
+    for (const ln of wrapText(g, lead, gridW, 31)) { g.fillText(ln, x, y); y += 46; }
+    y += 24;
+    const rows = [
+      ['concept', '概念', '逍遥', '蓝灰底 + 实线：庄子的核心范畴。'],
+      ['person', '人物', '庖丁', '暖赭底 + 点线：寓言里的人物。'],
+      ['place', '地名', '北冥', '灰绿底 + 虚线：书中的地点。'],
+      ['classical', '古今异义', '颜色', '灰紫底 + 粗线：古今词义不同。'],
+      ['keyword', '关键词', '鲲鹏', '只加粗、不铺底：扫读时的锚点。'],
+    ];
+    for (const [cat, name, sample, desc] of rows) {
+      const S = SEM_STYLE[cat];
+      const bx = x, by = y - 40, bw = 196, bh = 58;
+      if (cat === 'keyword') {
+        g.fillStyle = INK; setFont(g, 36, FONTS.serif, '600'); g.fillText(sample, bx + 12, y);
+      } else {
+        g.fillStyle = `rgba(${S.bg},.85)`; g.fillRect(bx, by, bw, bh);
+        g.fillStyle = INK; setFont(g, 36, FONTS.serif); g.fillText(sample, bx + 12, y);
+        g.save(); g.strokeStyle = S.line; g.lineWidth = S.w; g.setLineDash(S.dash);
+        g.beginPath(); g.moveTo(bx + 2, y + 12); g.lineTo(bx + bw - 2, y + 12); g.stroke(); g.restore();
+      }
+      g.fillStyle = VERM; setFont(g, 25); g.fillText(name, x + 230, y - 2);
+      g.fillStyle = 'rgba(40,34,30,.72)'; setFont(g, 25);
+      const dl = wrapText(g, desc, gridW - 230, 25);
+      dl.forEach((l, i) => g.fillText(l, x + 230, y + 32 + i * 34));
+      y += 100;
+    }
+    g.strokeStyle = 'rgba(60,50,40,.28)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 140, y); g.stroke();
+    y += 46;
+    g.fillStyle = 'rgba(40,34,30,.68)'; setFont(g, 25);
+    const notes = [
+      '原文：楷体（方正欧蝶正楷 + 张颢补字）；白话：宋体（狮尾加糖宋体）；标题：Cooper 正楷。',
+      '页边朱笔旁批保留原项目的动画：先划一道朱线，再在页边写出名目。',
+    ];
+    for (const n of notes) {
+      for (const ln of wrapText(g, n, gridW, 25)) { g.fillText(ln, x, y); y += 36; }
+      y += 8;
+    }
+  },
+
   after(g, page) {
     runningHead(g, page, '庄子');
     const x = textX('L');
@@ -417,6 +587,63 @@ function inkReveal(g, draw, x, y, w, h, p) {
   g.restore();
 }
 
+// EPUB 记号动画：底色先浮现，再划下划线，最后把字压粗
+function drawSemMarks(g, page, live, geom) {
+  const t = live.t;
+  const lines = page.lines || page.rows || [];
+  let busy = false, i = 0;
+  g.textBaseline = 'alphabetic';
+  lines.forEach((ln, r) => {
+    for (const m of ln.sem || []) {
+      const t0 = 0.45 + i * 0.16; i++;
+      const p = clamp((t - t0) / 0.55);
+      if (p < 1) busy = true;
+      if (p <= 0) continue;
+      const S = SEM_STYLE[m.cat] || SEM_STYLE.keyword;
+      const x = geom.x0 + (ln.indent + m.col) * geom.fs;
+      const y = geom.y(r);
+      const w = m.len * geom.fs;
+      // 1. 底色
+      if (S.bg && !m.small) {
+        g.save();
+        g.globalAlpha = 0.9 * easeOut(p);
+        g.fillStyle = `rgba(${S.bg},.95)`;
+        g.fillRect(x - 2, y - geom.fs * 0.86, w + 4, geom.fs * 1.12);
+        g.restore();
+      }
+      // 2. 下划线
+      if (S.line) {
+        const p2 = easeOut(clamp((t - t0 - 0.12) / 0.5));
+        if (p2 > 0) {
+          g.save();
+          g.strokeStyle = S.line; g.lineWidth = S.w;
+          g.setLineDash(S.dash || []);
+          g.beginPath();
+          g.moveTo(x + 1, y + geom.fs * 0.2);
+          g.lineTo(x + 1 + w * p2, y + geom.fs * 0.2);
+          g.stroke();
+          g.restore();
+        }
+      }
+      // 3. 加粗
+      const p3 = easeOut(clamp((t - t0 - 0.15) / 0.45));
+      if (p3 > 0) {
+        g.save();
+        g.globalAlpha = p3;
+        g.fillStyle = INK;
+        g.font = `600 ${geom.fs}px ${geom.font}`;
+        g.textAlign = 'center';
+        for (let k = 0; k < m.len; k++) {
+          g.fillText(ln.chars[m.col + k] || '', x + (k + 0.5) * geom.fs, y);
+        }
+        g.restore();
+      }
+      if (p < 1 || p3 < 1) busy = true;
+    }
+  });
+  return busy;
+}
+
 const LIVE = {
   toc(g, page, live) {
     const t = live.t;
@@ -429,7 +656,7 @@ const LIVE = {
       g.save();
       g.globalAlpha = easeOut(a);
       const hover = live.hover === e.no;
-      g.fillStyle = hover ? VERM : INK; setFont(g, 36); g.textAlign = 'left';
+      g.fillStyle = hover ? VERM : INK; setFont(g, 36, FONTS.title); g.textAlign = 'left';
       g.fillText(e.title, x + 86 + (1 - a) * 12, y);
       g.fillStyle = 'rgba(40,34,30,.5)'; setFont(g, 22);
       g.fillText(cnNum(e.no), x, y - 4);
@@ -486,7 +713,14 @@ const LIVE = {
         }
       }
     });
+    busy = drawSemMarks(g, page, live, { x0, fs: FS, font: FONTS.serif, y: (r) => TOP + 44 + r * LH }) || busy;
     return busy;
+  },
+
+  origin(g, page, live) {
+    return drawSemMarks(g, page, live, {
+      x0: textX(page.side), fs: O_FS, font: FONTS.kai, y: (r) => O_TOP + 44 + r * O_LH,
+    });
   },
 
   scenepage(g, page, live) {
@@ -562,5 +796,15 @@ export function tocHit(page, u, v) {
   const x = textX(page.side);
   if (px < x - 30 || px > x + gridW + 10) return null;
   for (const { e, y } of page.rows) if (py > y - 42 && py < y + 14) return e.no;
+  return null;
+}
+
+// 点记号：返回该词条的 mark（含 cat/info/portrait）
+export function markHit(page, u, v) {
+  if (!page.markRects || !page.markRects.length) return null;
+  const px = u * PW, py = (1 - v) * PH;
+  for (const r of page.markRects) {
+    if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return r.mark;
+  }
   return null;
 }

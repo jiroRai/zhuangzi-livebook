@@ -1,4 +1,6 @@
 REWRITE_PROMPT.md
-screenshots/ref-every-joule-*.png
+screenshots/
 .dev/
 node_modules/
+scripts/__pycache__/
+test-kai.html

@@ -321,6 +321,7 @@ export class Book {
       // 翻动的页总在静止页之上（订口处尤其容易重叠）
       for (const m of [l.matF, l.matB]) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
     }
+    l.group.visible = true;
     l.group.position.y = TB;
     this.group.add(l.group);
     return l;

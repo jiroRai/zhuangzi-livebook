@@ -11,9 +11,13 @@ export const WASH = {
   water: 'rgba(96,132,150,', ochre: 'rgba(196,150,84,', verm: 'rgba(176,67,45,', green: 'rgba(110,138,90,', ink: 'rgba(38,34,30,',
 };
 export const FONTS = {
-  serif: '"Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif',
-  brush: '"Ma Shan Zheng","Kaiti SC","STKaiti","KaiTi","Noto Serif CJK SC",serif',
+  // 网页内嵌子集：宋体=Swei Sugar，楷体=方正欧蝶（+张颢补字），标题=Cooper
+  serif: '"GJ-Song","Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif',
+  kai: '"GJ-Kai","GJ-KaiFallback","GJ-KaiExtB","GJ-KaiPua","LXGW WenKai","Kaiti SC","STKaiti","KaiTi","Noto Serif CJK SC",serif',
+  title: '"GJ-Title","CooperZhengKai","GJ-Kai","KaiTi",serif',
+  brush: '"Ma Shan Zheng","Kaiti SC","STKaiti","KaiTi","GJ-Kai",serif',
 };
+
 
 // Catmull-Rom 平滑
 export function smoothPts(pts, seg = 8, closed = false) {
